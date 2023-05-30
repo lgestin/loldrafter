@@ -26,7 +26,7 @@ class PositionalEncoding(nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, d_model: int, n_heads: int):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
         super().__init__()
         assert d_model % n_heads == 0
         self.d_model = d_model
@@ -34,6 +34,8 @@ class SelfAttention(nn.Module):
 
         self.qkv = nn.ModuleList([nn.Linear(d_model, d_model) for _ in range(3)])
         self.out_proj = nn.Linear(d_model, d_model)
+
+        self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x, x_cond=None, mask=None):
         if x_cond is None:
@@ -56,10 +58,12 @@ class SelfAttention(nn.Module):
             attn = attn.masked_fill(mask[:, :, :t, :tc] == 0, float("-inf"))
 
         attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
 
         out = attn @ v
 
         out = out.transpose(1, 2).contiguous().view(b, t, d)
+        out = self.dropout(out)
         return self.out_proj(out)
 
 

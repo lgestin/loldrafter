@@ -9,17 +9,15 @@ class Drafter(nn.Module):
         self, d_model: int, n_embeddings: dict, n_layers: int = 3, dropout: float = 0.0
     ):
         super().__init__()
-
         self.embeddings = nn.ModuleDict()
         for k, n in n_embeddings.items():
             self.embeddings[k] = nn.Embedding(n + 1, d_model)
-        self.embeddings["pos"] = nn.Embedding(5, d_model)
 
         self.positional_encoding = PositionalEncoding(
-            d_model=d_model, dropout=dropout, max_len=5
+            d_model=d_model, dropout=dropout, max_len=3 * 5
         )
 
-        self.in_layer = nn.Linear(2 * d_model, d_model)
+        self.in_layer = nn.Linear(d_model, d_model)
 
         bans_encoder = [
             TransformerLayer(d_model=d_model, n_heads=1, dropout=dropout)
@@ -37,7 +35,7 @@ class Drafter(nn.Module):
 
         self.out_layer = nn.Linear(d_model, n_embeddings["champions"] + 1)
 
-    def forward(self, picks, pick_order, bans):
+    def forward(self, picks, draft_mask, bans):
         # conditioning
         # - Bans
         # - Already picked champs (allied / ennemy)
@@ -46,65 +44,54 @@ class Drafter(nn.Module):
 
         # input
         # picks [12, 35, 18, 121, 5] champions picked
-        # next_pos_picked [4, 1, 2, 0, 3] first pick is adc, 2nd pick is jg...
-        B, T = picks.shape
+        B, _, T = picks.shape
+        picks = picks.masked_fill(~draft_mask, 0)
+        picks = self.embeddings["champions"](picks)
 
         # Encode bans
         # bans (B, 2, T) 2 is because both team ban
         # TODO: Check if views do as expected
-        bans = self.embeddings["champions"](bans).view(B * 2, T, -1)
-        bans = self.positional_encoding(bans)
-        bans = bans.view(B, 2 * T, -1)
-
-        x_cond = self.bans_encoder(bans)
+        bans = self.embeddings["champions"](bans)
+        # x_cond is bans and enemy_picks
+        x_cond = torch.cat([bans, picks[:, 1:]], dim=1)
+        x_cond = self.positional_encoding(x_cond.view(B, 3 * T, -1))
 
         # Encode picks
-        picks = self.embeddings["champions"](picks)
-        input_picks = torch.cat(
-            [torch.zeros_like(picks[:, :1, :]), picks[:, :-1, :]], dim=1
-        )
-        pos = self.embeddings["pos"](pick_order)
-
-        x = torch.cat([pos, input_picks], dim=-1)
+        # picks (B, 2, T)
+        x = self.positional_encoding(picks[:, 0])
 
         logits = self.model(x, x_cond)
 
         return logits
 
-    def sample(self, picks=None, pick_order=None, bans=None):
-        # Autoregressive Sampling
+    def sample_next(self, picks, draft_mask, bans):
+        # Sample the next n most probable picks given current ones
         B, _, T = bans.shape
-        x_cond = self.embeddings["champions"](bans).view(B * 2, T, -1)
-        x_cond = self.positional_encoding(x_cond)
-        x_cond = x_cond.view(B, 2 * T, -1)
+        picks = picks.masked_fill(~draft_mask, 0)
+        x = self.embeddings["champions"](picks)
 
+        x_cond = self.embeddings["champions"](bans)
+        x_cond = torch.cat([x_cond, x[:, 1:]], dim=1)
+        x_cond = self.positional_encoding(x_cond.view(B, 3 * T, -1))
         x_cond = self.bans_encoder(x_cond)
 
-        if picks is None:
-            input_picks = torch.zeros(
-                (B, 1, self.embeddings["champions"].weight.shape[-1])
-            ).to(pick_order.device)
-        else:
-            picks = self.embeddings["champions"](picks)
-            input_picks = torch.cat(
-                [torch.zeros_like(picks[:, :1]), picks], dim=1
-            )
+        x = self.positional_encoding(x[:, 0])
 
-        assert pick_order is not None
-        pos = self.embeddings["pos"](pick_order)
+        logits = self.model(x, x_cond=x_cond)
 
-        draft = []
-        # pick order contains the picks we want to do during sampling
-        for i in range(pos.shape[1]):
-            x = torch.cat([pos[:, :i+1], input_picks], dim=-1)
-            logits = self.model(x, x_cond)
-            _, pred = self.predict_from_logits(logits=logits, bans=bans)
-            draft.append(pred[:, -1])
-            pick = self.embeddings["champions"](pred[:, -1:])
-            input_picks = torch.cat([input_picks, pick], dim=1)
+        probs, pred = self.predict_from_logits(
+            logits=logits, mask=draft_mask[:, 0], bans=bans
+        )
 
-        draft = torch.stack(draft, dim=-1)
-        return draft
+        # mask out probs from already known picks
+        probs = probs.masked_fill(draft_mask[:, 0, :, None], 0)
+        max_probs = probs.max(dim=-1).values
+        pick_mask = max_probs == max_probs.max(dim=-1, keepdims=True).values
+        pick = pred[pick_mask]
+
+        updated_picks = picks[:, 0] * ~pick_mask + pred * pick_mask
+
+        return pick, picks, updated_picks
 
     def model(self, x, x_cond):
         T, Tc = x.shape[1], x_cond.shape[1]
@@ -119,9 +106,14 @@ class Drafter(nn.Module):
 
         return logits
 
-    def predict_from_logits(self, logits, bans=None):
+    def predict_from_logits(self, logits, mask=None, bans=None):
         # logits (B, T, Nchamp)
         # bans (B, Nbans)
+
+        if mask is None:
+            mask = torch.zeros_like(logits[..., 0])
+        logits = logits.masked_fill(mask[..., None], float("-inf"))
+
         if bans is not None:
             ban_mask = self.build_ban_mask(bans=bans)
             logits = logits.masked_fill(ban_mask, float("-inf"))

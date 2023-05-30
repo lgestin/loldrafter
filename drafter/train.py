@@ -55,9 +55,15 @@ def train(
         batch_metrics = {}
         with torch.set_grad_enabled(model.training):
             logits = model(**batch)
-            loss_ce = F.cross_entropy(
-                logits.view(-1, logits.shape[-1]), batch["picks"].view(-1)
-            )
+            target = batch["picks"][:, 0]
+
+            # masking
+            mask = ~batch["draft_mask"][:, 0]
+            masked_logits = (logits * mask[..., None]).view(-1, logits.shape[-1])
+            masked_target = (target * mask).contiguous().view(-1)
+
+            # loss computation
+            loss_ce = F.cross_entropy(masked_logits, masked_target)
             batch_metrics["loss_ce"] = loss_ce
 
             if model.training:
@@ -65,8 +71,10 @@ def train(
                 loss_ce.backward()
                 optimizer.step()
             else:
-                probs, pred = model.predict_from_logits(logits, bans=batch["bans"])
-                accuracy = (pred == batch["picks"]).float().mean(1).mean(0)
+                probs, pred = model.predict_from_logits(
+                    logits, mask=batch["draft_mask"][:, 0], bans=batch["bans"]
+                )
+                accuracy = (pred == batch["picks"][:, 0]).float().mean(1).mean(0)
                 batch_metrics["accuracy"] = accuracy
 
         return batch_metrics
@@ -95,17 +103,29 @@ def train(
                 writer.add_scalar(f"val/{k}", torch.stack(v).mean(), i)
 
             # Sample from the model
+            val_batch = move_batch_to_device(val_batch)
             with torch.no_grad():
-                pick_order = torch.stack(
-                    [torch.randperm(5) for _ in range(6)], dim=0
-                ).to("cuda")
-                picks = model.sample(
-                    pick_order=pick_order, bans=val_batch["bans"][:6].cuda()
+                pick, picks, updated_picks = model.sample_next(
+                    picks=val_batch["picks"],
+                    draft_mask=val_batch["draft_mask"],
+                    bans=val_batch["bans"],
                 )
-            for k, (p, c, b) in enumerate(
-                zip(pick_order, int_to_champ(picks), int_to_champ(val_batch["bans"][:6].view(-1, 10)))
+            for k, (b, m, op, ap, up, gt) in enumerate(
+                zip(
+                    int_to_champ(val_batch["bans"].view(-1, 10)),
+                    val_batch["draft_mask"],
+                    int_to_champ(picks[:, 1]),
+                    int_to_champ(picks[:, 0]),
+                    int_to_champ(updated_picks),
+                    int_to_champ(val_batch["picks"][:, 0]),
+                )
             ):
-                text = f'bans: {" ".join(b)}  \npick_order:{" ".join([str(s) for s in p.tolist()])}  \npicks: {" ".join(c)}'
+                text = f'bans: {" ".join(b)}  '
+                text += f'\ndraft_mask: {" ".join([str(s) for s in m.tolist()])}  '
+                text += f'\nopp_picks: {" ".join(op)}  '
+                text += f'\nally_picks: {" ".join(ap)}  '
+                text += f'\nupdt_picks: {" ".join(up)}  '
+                text += f'\ngt_picks: {" ".join(gt)}'
                 writer.add_text(f"draft_sample_{k}", text, i)
 
 
@@ -114,6 +134,7 @@ import json
 with open("/data/labels/champions.json", "r") as f:
     d = json.load(f)
 d = {v: k for k, v in d.items()}
+d[0] = "UNK"
 
 
 def int_to_champ(batch):

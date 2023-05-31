@@ -43,7 +43,11 @@ def main(dump_path: Path):
     for league in ["LEC", "LPL", "LCS", "LCK", "LFL"]:
         for year in range(2019, 2024):
             for split in ["Spring", "Summer"]:
-                games += scraper.run(league=league, year=year, split=split)
+                for competition in ["Season", "Playoffs"]:
+                    print("scraping", league, year, split, competition)
+                    games += scraper.run(
+                        league=league, year=year, split=split, competition=competition
+                    )
 
     save(games, dump_path=dump_path / f"data.json")
 

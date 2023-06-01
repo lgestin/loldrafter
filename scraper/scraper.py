@@ -10,70 +10,105 @@ class ProGameScraper:
         self.url = "https://lol.fandom.com/wiki"
 
     def run(self, league: str, year: int, split: str, competition: str):
+        # TODO: turn that into pandas database to make it more efficient
         url = f"{self.url}/{league}/{year}_Season/{split}_{competition}"
         match_page = self.get_page(url=f"{url}/Match_History")
         pickban_page = self.get_page(url=f"{url}/Picks_and_Bans")
 
-        if not match_page.ok or not pickban_page.ok:
+        if not match_page.ok:
             return []
 
-        matches = self.parse_page(match_page)
-        pickbans = self.parse_page(pickban_page)
+        match_rows = self.parse_page(match_page)
+        pickban_rows = self.parse_page(pickban_page)
 
         get_data = lambda col: col.find_all("a")[0].get("title")
+
+        # Parse games
+        games = []
+        for match in match_rows[3:]:
+            game = {
+                "league": league,
+                "year": year,
+                "split": split,
+                "competition": competition,
+            }
+
+            matchcols = match.find_all("td")
+            game["date"] = matchcols[0].text
+            game["patch"] = get_data(matchcols[1])
+            game["winner"] = get_data(matchcols[4])
+
+            teams = {"red": {"side": "red"}, "blue": {"side": "blue"}}
+
+            teams["red"]["name"] = get_data(matchcols[3])
+            teams["blue"]["name"] = get_data(matchcols[2])
+
+            picks = self.get_picks_from_cols(matchcols)
+            teams["blue"]["picks"], teams["red"]["picks"] = picks
+
+            bans = self.get_bans_from_cols(matchcols)
+            teams["blue"]["bans"], teams["red"]["bans"] = bans
+
+            game.update(teams)
+            games.append(game)
+
+        # Parse pcikbans order
+        pickban_page = self.get_page(url=f"{url}/Picks_and_Bans")
+        pickban_rows = self.parse_page(pickban_page)
+
+        pickbans = []
+        for match in pickban_rows[2:]:
+            pickbancols = match.find_all("td")
+
+            pickban = {}
+            pickban["blue"] = pickbancols[1].get("title")
+            pickban["red"] = pickbancols[2].get("title")
+            pickban["patch"] = get_data(pickbancols[4])
+            pickban["order"] = self.parse_pickban_row(pickbancols[5:-2])
+
+            pickbans.append(pickban)
 
         def get_order(pickban, global_order):
             order = [global_order.index(champ) for champ in pickban]
             sorder = sorted(order)
             return [sorder.index(o) for o in order]
 
-        games, unmatched_games = [], []
-        for match, pickban in zip(matches[3:], pickbans[2:]):
-            matchcols = match.find_all("td")
-            pickbancols = pickban.find_all("td")
+        # Match pickbans to games to add data
+        split = []
+        for game in games:
+            pickban_candidates = []
+            for pickban in pickbans:
+                if game["blue"]["name"] != pickban["blue"]:
+                    continue
+                if game["red"]["name"] != pickban["red"]:
+                    continue
+                if game["patch"] != pickban["patch"]:
+                    continue
+                match_pickban = (
+                    game["blue"]["picks"]
+                    + game["red"]["picks"]
+                    + game["blue"]["bans"]
+                    + game["red"]["bans"]
+                )
 
-            pickban_order = self.parse_pickban_row(pickbancols[5:-2])
+                if not (set(match_pickban) == set(pickban["order"])):
+                    continue
+                else:
+                    pickban_candidates.append(pickban)
 
-            bans = self.get_bans_from_cols(matchcols)
-            picks = self.get_picks_from_cols(matchcols)
+            if len(pickban_candidates) == 1:
+                pickban = pickban_candidates[0]["order"]
+                game["red"]["picks_order"] = get_order(game["red"]["picks"], pickban)
+                game["red"]["bans_order"] = get_order(game["red"]["bans"], pickban)
+                game["blue"]["picks_order"] = get_order(game["blue"]["picks"], pickban)
+                game["blue"]["bans_order"] = get_order(game["blue"]["bans"], pickban)
+            else:
+                game["red"]["picks_order"], game["red"]["bans_order"] = None, None
+                game["blue"]["picks_order"], game["blue"]["bans_order"] = None, None
+            game = Game(**game)
+            split.append(game)
 
-            # chech that both rows contain same match:
-            pickban_from_match = set(bans[0] + bans[1]) | set(picks[0] + picks[1])
-            if not pickban_from_match == set(pickban_order):
-                unmatched_games.append((matchcols, pickbancols))
-                # TODO match back unmatched games
-                continue
-
-            game = Game(
-                league=league,
-                year=year,
-                split=split,
-                date=self.get_date_from_cols(matchcols),
-                competition=competition,
-                patch=get_data(matchcols[1]),
-                blue=Team(
-                    name=get_data(matchcols[2]),
-                    side="blue",
-                    picks=picks[0],
-                    picks_order=get_order(picks[0], pickban_order),
-                    bans=bans[0],
-                    bans_order=get_order(bans[0], pickban_order),
-                ),
-                red=Team(
-                    name=get_data(matchcols[3]),
-                    side="red",
-                    picks=picks[1],
-                    picks_order=get_order(picks[1], pickban_order),
-                    bans=bans[1],
-                    bans_order=get_order(bans[1], pickban_order),
-                ),
-                winner=get_data(matchcols[4]),
-            )
-            games.append(game)
-
-        print(f"{len(games)} found, {len(unmatched_games)} failed to match")
-
-        return games
+        return split
 
     def get_page(self, url):
         page = requests.get(url)

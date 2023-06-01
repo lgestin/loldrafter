@@ -43,6 +43,8 @@ def main(dump_path: Path):
     for league in ["LEC", "LPL", "LCS", "LCK", "LFL"]:
         for year in range(2019, 2024):
             for split in ["Spring", "Summer"]:
+                if year == 2023 and split == "Summer":
+                    continue
                 for competition in ["Season", "Playoffs"]:
                     print("scraping", league, year, split, competition)
                     games += scraper.run(

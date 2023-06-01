@@ -24,8 +24,9 @@ def train(
 
     dataset = DraftDataset(data_path)
     indices = list(range(len(dataset)))
-    train_indices = indices[val_size:]
-    val_indices = indices[:val_size]
+    n_samples = len(dataset.data)
+    train_indices = [i for i in indices if i % n_samples > val_size]
+    val_indices = [i for i in indices if i % n_samples <= val_size][:val_size]
 
     train_set = torch.utils.data.Subset(dataset, train_indices)
     val_set = torch.utils.data.Subset(dataset, val_indices)

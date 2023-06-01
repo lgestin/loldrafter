@@ -16,6 +16,9 @@ class DraftDataset(Dataset):
         with open(path_to_data, "r") as f:
             games = json.load(f)
         self.data = [Game(**game) for game in games]
+        
+        random.seed(0)
+        random.shuffle(self.data)
 
         # filter out sample for which we don't have pick/ban order
         # TODO split data, split on augmentation isn't enough
@@ -74,15 +77,15 @@ class DraftDataset(Dataset):
         }
 
     def __len__(self):
-        return 10_000_000
+        return 1_000_000
 
     def __getitem__(self, index):
         # BE CAREFUL everytime this is called, seeds are reset FOR THE WHOLE PROGRAM
-        random.seed(index)
 
-        i = random.randint(0, len(self.data) - 1)
+        i = index % len(self.data)
         game = self.data[i]
 
+        random.seed(index)
         teams = [game.blue, game.red]
 
         picks = [[self.labels["champions"][p] for p in t.picks] for t in teams]
@@ -94,10 +97,6 @@ class DraftDataset(Dataset):
         bans_order = torch.as_tensor([t.bans_order for t in teams])
 
         draft_state = random.choice(range(6))
-        if draft_state % 2 == 0:
-            side = "blue"
-        else:
-            side = "red"
 
         n_picks = self.n_draft["picks"][:, draft_state][:, None]
         picks_mask = picks_order < n_picks

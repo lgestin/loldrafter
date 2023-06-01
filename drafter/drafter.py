@@ -35,7 +35,7 @@ class Drafter(nn.Module):
 
         self.out_layer = nn.Linear(d_model, n_embeddings["champions"] + 1)
 
-    def forward(self, picks, draft_mask, bans):
+    def forward(self, picks, bans, picks_mask=None, bans_mask=None):
         # conditioning
         # - Bans
         # - Already picked champs (allied / ennemy)
@@ -45,16 +45,18 @@ class Drafter(nn.Module):
         # input
         # picks [12, 35, 18, 121, 5] champions picked
         B, _, T = picks.shape
-        picks = picks.masked_fill(~draft_mask, 0)
+        picks = picks.masked_fill(~picks_mask, 0)
         picks = self.embeddings["champions"](picks)
 
         # Encode bans
         # bans (B, 2, T) 2 is because both team ban
         # TODO: Check if views do as expected
+        bans = bans.masked_fill(~bans_mask, 0)
         bans = self.embeddings["champions"](bans)
         # x_cond is bans and enemy_picks
         x_cond = torch.cat([bans, picks[:, 1:]], dim=1)
         x_cond = self.positional_encoding(x_cond.view(B, 3 * T, -1))
+        x_cond = self.bans_encoder(x_cond)
 
         # Encode picks
         # picks (B, 2, T)
@@ -64,12 +66,17 @@ class Drafter(nn.Module):
 
         return logits
 
-    def sample_next(self, picks, draft_mask, bans):
+    @torch.no_grad()
+    def sample_next(self, picks, bans, picks_mask=None, bans_mask=None):
         # Sample the next n most probable picks given current ones
         B, _, T = bans.shape
-        picks = picks.masked_fill(~draft_mask, 0)
+
+        if picks_mask is not None:
+            picks = picks.masked_fill(~picks_mask, 0)
         x = self.embeddings["champions"](picks)
 
+        if bans_mask is not None:
+            bans = bans.masked_fill(~bans_mask, 0)
         x_cond = self.embeddings["champions"](bans)
         x_cond = torch.cat([x_cond, x[:, 1:]], dim=1)
         x_cond = self.positional_encoding(x_cond.view(B, 3 * T, -1))
@@ -79,13 +86,14 @@ class Drafter(nn.Module):
 
         logits = self.model(x, x_cond=x_cond)
 
+        already_picks = picks.masked_fill(~picks_mask, 0)
         probs, pred = self.predict_from_logits(
-            logits=logits, mask=draft_mask[:, 0], bans=bans
+            logits=logits, already_picks=already_picks, bans=bans
         )
 
-        # mask out probs from already known picks
-        probs = probs.masked_fill(draft_mask[:, 0, :, None], 0)
+        # TODO: mask out probs from already known picks and bans
         max_probs = probs.max(dim=-1).values
+        max_probs = max_probs.masked_fill(picks_mask[:, 0], 0)  # Don't predict alreadyknown
         pick_mask = max_probs == max_probs.max(dim=-1, keepdims=True).values
         pick = pred[pick_mask]
 
@@ -96,23 +104,23 @@ class Drafter(nn.Module):
     def model(self, x, x_cond):
         T, Tc = x.shape[1], x_cond.shape[1]
 
-        mask = torch.ones(1, 1, T, Tc).tril().to(x.device)
-
         x = self.in_layer(x)
         x = self.positional_encoding(x)
         for layer in self.draft_decoder:
-            x = layer(x, x_cond=x_cond, mask=mask)
+            x = layer(x, x_cond=x_cond)
         logits = self.out_layer(x)
 
         return logits
 
-    def predict_from_logits(self, logits, mask=None, bans=None):
+    def predict_from_logits(self, logits, already_picks=None, bans=None):
         # logits (B, T, Nchamp)
         # bans (B, Nbans)
 
-        if mask is None:
+        if already_picks is None:
             mask = torch.zeros_like(logits[..., 0])
-        logits = logits.masked_fill(mask[..., None], float("-inf"))
+        else:
+            mask = self.build_ban_mask(already_picks)
+        logits = logits.masked_fill(mask, float("-inf"))
 
         if bans is not None:
             ban_mask = self.build_ban_mask(bans=bans)

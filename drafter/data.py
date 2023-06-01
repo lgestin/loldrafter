@@ -17,6 +17,11 @@ class DraftDataset(Dataset):
             games = json.load(f)
         self.data = [Game(**game) for game in games]
 
+        # filter out sample for which we don't have pick/ban order
+        # TODO split data, split on augmentation isn't enough
+        games = [game for game in self.data if game.blue.picks_order is not None]
+        self.data = games
+
         self.labels, self.n = {}, {}
         with open(path_to_data.parent / "labels" / "teams.json", "r") as f:
             self.labels["teams"] = json.load(f)
@@ -28,18 +33,45 @@ class DraftDataset(Dataset):
             self.labels["patchs"] = json.load(f)
         self.n["patchs"] = max(v for v in self.labels["patchs"].values())
 
-        draft_masks = {
-            "blue": torch.zeros(3, 2, 5).bool(),
-            "red": torch.zeros(3, 2, 5).bool(),
+        # DRAFT MASKS
+        # DraftPhase has n possible phases
+        # 0:
+        #   PICKS: 0 0 0 0 0 | 0 0 0 0 0
+        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
+
+        # 1:
+        #   PICKS: 1 0 0 0 0 | 0 0 0 0 0
+        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
+
+        # 2:
+        #   PICKS: 1 0 0 0 0 | 1 1 0 0 0
+        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
+
+        # 3:
+        #   PICKS: 1 1 1 0 0 | 1 1 0 0 0
+        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
+
+        # 4:
+        #   PICKS: 1 1 1 0 0 | 1 1 1 0 0
+        #   BANS:  1 1 1 1 1 | 1 1 1 1 1
+
+        # 5:
+        #   PICKS: 1 1 1 0 0 | 1 1 1 1 0
+        #   BANS:  1 1 1 1 1 | 1 1 1 1 1
+
+        # 6:
+        #   PICKS: 1 1 1 1 1 | 1 1 1 1 0
+        #   BANS:  1 1 1 1 1 | 1 1 1 1 1
+
+        blue_picks_state = torch.tensor([0, 1, 1, 3, 3, 3, 5, 5])
+        red_picks_state = torch.tensor([0, 0, 2, 2, 3, 4, 4, 5])
+        blue_bans_state = torch.tensor([3, 3, 3, 3, 5, 5, 5])
+        red_bans_state = torch.tensor([3, 3, 3, 3, 5, 5, 5])
+        # number of champions picked at every stage
+        self.n_draft = {
+            "picks": torch.stack([blue_picks_state, red_picks_state]),
+            "bans": torch.stack([blue_bans_state, red_bans_state]),
         }
-        arange = torch.arange(5)
-        draft_masks["blue"][0] = torch.stack([arange < 0, arange < 0], dim=0)
-        draft_masks["blue"][1] = torch.stack([arange < 1, arange < 2], dim=0)
-        draft_masks["blue"][2] = torch.stack([arange < 3, arange < 4], dim=0)
-        draft_masks["red"][0] = torch.stack([arange < 0, arange < 1], dim=0)
-        draft_masks["red"][1] = torch.stack([arange < 2, arange < 3], dim=0)
-        draft_masks["red"][2] = torch.stack([arange < 4, arange < 5], dim=0)
-        self.draft_masks = draft_masks
 
     def __len__(self):
         return 10_000_000
@@ -51,49 +83,47 @@ class DraftDataset(Dataset):
         i = random.randint(0, len(self.data) - 1)
         game = self.data[i]
 
-        sides = ["blue", "red"]
-        random.shuffle(sides)
-        ally_side, opp_side = sides
-        ally_team, opp_team = getattr(game, ally_side), getattr(game, opp_side)
+        teams = [game.blue, game.red]
 
-        ally_team_name = self.labels["teams"][ally_team.name]
-        ally_picks = [self.labels["champions"][c] for c in ally_team.picks]
-        ally_bans = [self.labels["champions"][c] for c in ally_team.bans]
+        picks = [[self.labels["champions"][p] for p in t.picks] for t in teams]
+        picks = torch.as_tensor(picks)
+        picks_order = torch.as_tensor([t.picks_order for t in teams])
 
-        opp_team_name = self.labels["teams"][opp_team.name]
-        opp_picks = [self.labels["champions"][c] for c in opp_team.picks]
-        opp_bans = [self.labels["champions"][c] for c in opp_team.bans]
+        bans = [[self.labels["champions"][b] for b in t.bans] for t in teams]
+        bans = torch.as_tensor(bans)
+        bans_order = torch.as_tensor([t.bans_order for t in teams])
 
-        ally_picks = torch.as_tensor(ally_picks)
-        opp_picks = torch.as_tensor(opp_picks)
-        picks = torch.stack([ally_picks, opp_picks])
+        draft_state = random.choice(range(6))
+        if draft_state % 2 == 0:
+            side = "blue"
+        else:
+            side = "red"
 
-        ally_bans = torch.as_tensor(ally_bans)
-        opp_bans = torch.as_tensor(opp_bans)
-        bans = torch.stack([ally_bans, opp_bans], dim=0)
-        # MASKS
+        n_picks = self.n_draft["picks"][:, draft_state][:, None]
+        picks_mask = picks_order < n_picks
 
-        # WIP Make training BERT like so that it is easy to sample
-        # In non pro games 3 possible states when picking champions
-        # if red:
-        #   0 0 0 0 0
-        #   1 1 0 0 0
-        #   1 1 1 1 0
-        # if blue:
-        #   0 0 0 0 0
-        #   1 0 0 0 0
-        #   1 1 1 0 0
-        # TODO: maybe not restrain to draft mask, but any random mask during training
-        draft_state = random.randint(0, 2)
-        draft_mask = self.draft_masks[ally_side][draft_state].clone()
+        n_bans = self.n_draft["bans"][:, draft_state][:, None]
+        bans_mask = bans_order < n_bans
 
-        # make random which position to chose
-        perm = list(range(5))
-        for i in range(2):
-            random.shuffle(perm)
-            draft_mask[i] = draft_mask[i, perm]
+        n_next_picks = self.n_draft["picks"][:, draft_state + 1][:, None]
+        next_picks_mask = picks_order < n_next_picks
 
-        return {"picks": picks, "draft_mask": draft_mask, "bans": bans}
+        target_mask = (picks_mask.float() - next_picks_mask.float()).bool()
+        assert 0 < target_mask.sum().item() <= 2
+
+        data = {
+            "picks": picks,
+            "bans": bans,
+            "picks_mask": picks_mask,
+            "bans_mask": bans_mask,
+            "target_mask": target_mask,
+        }
+
+        # flip all tensors if side is red
+        if draft_state % 2 == 1:
+            data = {k: v.flip(0) for k, v in data.items()}
+
+        return data
 
 
 if __name__ == "__main__":

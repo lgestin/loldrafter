@@ -54,16 +54,19 @@ def train(
 
         batch_metrics = {}
         with torch.set_grad_enabled(model.training):
+            B, _, T = batch["picks"].shape
+            target_mask = batch.pop("target_mask")[:, 0]
             logits = model(**batch)
             target = batch["picks"][:, 0]
 
             # masking
-            mask = ~batch["draft_mask"][:, 0]
-            masked_logits = (logits * mask[..., None]).view(-1, logits.shape[-1])
-            masked_target = (target * mask).contiguous().view(-1)
+            masked_logits = logits.masked_fill(~target_mask[..., None], 0)
+            masked_target = target.masked_fill(~target_mask, 0)
 
             # loss computation
-            loss_ce = F.cross_entropy(masked_logits, masked_target)
+            loss_ce = F.cross_entropy(
+                masked_logits.view(B * T, -1), masked_target.view(B * T)
+            )
             batch_metrics["loss_ce"] = loss_ce
 
             if model.training:
@@ -71,8 +74,9 @@ def train(
                 loss_ce.backward()
                 optimizer.step()
             else:
+                already_picks = batch["picks"].masked_fill(~batch["picks_mask"], 0)
                 probs, pred = model.predict_from_logits(
-                    logits, mask=batch["draft_mask"][:, 0], bans=batch["bans"]
+                    logits, already_picks=already_picks, bans=batch["bans"]
                 )
                 accuracy = (pred == batch["picks"][:, 0]).float().mean(1).mean(0)
                 batch_metrics["accuracy"] = accuracy
@@ -107,13 +111,14 @@ def train(
             with torch.no_grad():
                 pick, picks, updated_picks = model.sample_next(
                     picks=val_batch["picks"],
-                    draft_mask=val_batch["draft_mask"],
                     bans=val_batch["bans"],
+                    picks_mask=val_batch["picks_mask"],
+                    bans_mask=val_batch["bans_mask"],
                 )
             for k, (b, m, op, ap, up, gt) in enumerate(
                 zip(
                     int_to_champ(val_batch["bans"].view(-1, 10)),
-                    val_batch["draft_mask"],
+                    val_batch["picks_mask"],
                     int_to_champ(picks[:, 1]),
                     int_to_champ(picks[:, 0]),
                     int_to_champ(updated_picks),
@@ -150,8 +155,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=Path, required=True)
     parser.add_argument("--exp_path", type=Path, required=True)
-    parser.add_argument("--d_model", type=int, default=64)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--d_model", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--dropout", type=float, default=0.1)
 

@@ -1,3 +1,4 @@
+import json
 import torch
 import torch.nn.functional as F
 
@@ -75,9 +76,11 @@ def train(
                 loss_ce.backward()
                 optimizer.step()
             else:
+                # evaluation of the model. Compute accuracy of the predictions
                 already_picks = batch["picks"].masked_fill(~batch["picks_mask"], 0)
+                bans = batch["bans"].masked_fill(~batch["bans_mask"], 0)
                 probs, pred = model.predict_from_logits(
-                    logits, already_picks=already_picks, bans=batch["bans"]
+                    logits, already_picks=already_picks, bans=bans
                 )
                 accuracy = (pred == batch["picks"][:, 0]).float().mean(1).mean(0)
                 batch_metrics["accuracy"] = accuracy
@@ -116,14 +119,15 @@ def train(
                     picks_mask=val_batch["picks_mask"],
                     bans_mask=val_batch["bans_mask"],
                 )
+            champions_dict = get_champions_dict(data_path)
             for k, (b, m, op, ap, up, gt) in enumerate(
                 zip(
-                    int_to_champ(val_batch["bans"].view(-1, 10)),
+                    int_to_champ(val_batch["bans"].view(-1, 10), d=champions_dict),
                     val_batch["picks_mask"],
-                    int_to_champ(picks[:, 1]),
-                    int_to_champ(picks[:, 0]),
-                    int_to_champ(updated_picks),
-                    int_to_champ(val_batch["picks"][:, 0]),
+                    int_to_champ(picks[:, 1], d=champions_dict),
+                    int_to_champ(picks[:, 0], d=champions_dict),
+                    int_to_champ(updated_picks, d=champions_dict),
+                    int_to_champ(val_batch["picks"][:, 0], d=champions_dict),
                 )
             ):
                 text = f'bans: {" ".join(b)}  '
@@ -135,15 +139,15 @@ def train(
                 writer.add_text(f"draft_sample_{k}", text, i)
 
 
-import json
+def get_champions_dict(data_path: Path):
+    with open("/data/labels/champions.json", "r") as f:
+        d = json.load(f)
+    d["UNK"] = 0
+    dinv = {v: k for k, v in d.items()}
+    return dinv
 
-with open("/data/labels/champions.json", "r") as f:
-    d = json.load(f)
-d = {v: k for k, v in d.items()}
-d[0] = "UNK"
 
-
-def int_to_champ(batch):
+def int_to_champ(batch, d: dict):
     champs = []
     for item in batch:
         champs.append([d[i.item()] for i in item])

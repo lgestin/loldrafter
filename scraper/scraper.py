@@ -103,6 +103,7 @@ class ProGameScraper:
                 game["blue"]["picks_order"] = get_order(game["blue"]["picks"], pickban)
                 game["blue"]["bans_order"] = get_order(game["blue"]["bans"], pickban)
             else:
+                # If can't be matched or if multiple matching, then consider the data missing
                 game["red"]["picks_order"], game["red"]["bans_order"] = None, None
                 game["blue"]["picks_order"], game["blue"]["bans_order"] = None, None
             game = Game(**game)

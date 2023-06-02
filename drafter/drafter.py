@@ -37,30 +37,31 @@ class Drafter(nn.Module):
 
     def forward(self, picks, bans, picks_mask=None, bans_mask=None):
         # conditioning
-        # - Bans
-        # - Already picked champs (allied / ennemy)
-        # - Lane of the champ to pick
+        # + Bans
+        # + Already picked champs (allied / ennemy)
         # - Side, Patch, League, Team
 
-        # input
-        # picks [12, 35, 18, 121, 5] champions picked
+        # picks (B, 2, T), bans (B, 2, T)
+        # picks_mask (B, 2, T), bans_mask (B, 2, T)
+        # 2 is for each of the two teams
+
+        # Mask and embed picks
         B, _, T = picks.shape
         picks = picks.masked_fill(~picks_mask, 0)
         picks = self.embeddings["champions"](picks)
 
-        # Encode bans
-        # bans (B, 2, T) 2 is because both team ban
-        # TODO: Check if views do as expected
+        # Mask and embed bans
         bans = bans.masked_fill(~bans_mask, 0)
         bans = self.embeddings["champions"](bans)
         # x_cond is bans and enemy_picks
         x_cond = torch.cat([bans, picks[:, 1:]], dim=1)
         x_cond = self.positional_encoding(x_cond.view(B, 3 * T, -1))
         x_cond = self.bans_encoder(x_cond)
+        # x_cond (B, 3 * T, d_model)
 
-        # Encode picks
-        # picks (B, 2, T)
+        # Positional_encoding of picks
         x = self.positional_encoding(picks[:, 0])
+        # x (B, T, d_model)
 
         logits = self.model(x, x_cond)
 
@@ -68,7 +69,7 @@ class Drafter(nn.Module):
 
     @torch.no_grad()
     def sample_next(self, picks, bans, picks_mask=None, bans_mask=None):
-        # Sample the next n most probable picks given current ones
+        # Sample the next most probable picks given current ones
         B, _, T = bans.shape
 
         if picks_mask is not None:
@@ -93,7 +94,9 @@ class Drafter(nn.Module):
 
         # TODO: mask out probs from already known picks and bans
         max_probs = probs.max(dim=-1).values
-        max_probs = max_probs.masked_fill(picks_mask[:, 0], 0)  # Don't predict alreadyknown
+        max_probs = max_probs.masked_fill(
+            picks_mask[:, 0], 0
+        )  # Don't predict alreadyknown
         pick_mask = max_probs == max_probs.max(dim=-1, keepdims=True).values
         pick = pred[pick_mask]
 
@@ -102,7 +105,8 @@ class Drafter(nn.Module):
         return pick, picks, updated_picks
 
     def model(self, x, x_cond):
-        T, Tc = x.shape[1], x_cond.shape[1]
+        # apply the model to the input
+        # TODO: add the encoding steps to this function
 
         x = self.in_layer(x)
         x = self.positional_encoding(x)
@@ -114,27 +118,28 @@ class Drafter(nn.Module):
 
     def predict_from_logits(self, logits, already_picks=None, bans=None):
         # logits (B, T, Nchamp)
-        # bans (B, Nbans)
+        # bans (B, 2, Nbans)
 
-        if already_picks is None:
-            mask = torch.zeros_like(logits[..., 0])
-        else:
-            mask = self.build_ban_mask(already_picks)
-        logits = logits.masked_fill(mask, float("-inf"))
-
+        # Mask champions already picked or banned
+        if already_picks is None and bans is None:
+            mask = torch.zeros_like(logits)
+        if already_picks is not None:
+            mask = self.build_champ_mask(already_picks)
         if bans is not None:
-            ban_mask = self.build_ban_mask(bans=bans)
-            logits = logits.masked_fill(ban_mask, float("-inf"))
+            mask = mask | self.build_champ_mask(bans)
+
+        logits.masked_fill(mask, float("-inf"))
 
         probs = logits.softmax(dim=-1)
         return probs, probs.argmax(dim=-1)
 
-    def build_ban_mask(self, bans):
-        B = bans.shape[0]
-        ban_mask = torch.zeros((B, self.embeddings["champions"].weight.shape[0])).bool()
-        ban_mask = ban_mask.to(bans.device)
-        ban_mask = torch.scatter(ban_mask, -1, bans.view(B, -1), True)
-        return ban_mask.unsqueeze(1)
+    def build_champ_mask(self, champs):
+        """Builds a mask of shape (B, 1, Nchamp) that masks already picked/bans champs"""
+        B = champs.size(0)
+        mask = torch.zeros((B, self.embeddings["champions"].weight.shape[0])).bool()
+        mask = mask.to(champs.device)
+        mask = torch.scatter(mask, -1, champs.view(B, -1), True)
+        return mask.unsqueeze(1)
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ class DraftDataset(Dataset):
         with open(path_to_data, "r") as f:
             games = json.load(f)
         self.data = [Game(**game) for game in games]
-        
+
         random.seed(0)
         random.shuffle(self.data)
 
@@ -77,7 +77,7 @@ class DraftDataset(Dataset):
         }
 
     def __len__(self):
-        return 1_000_000
+        return 10_000_000
 
     def __getitem__(self, index):
         # BE CAREFUL everytime this is called, seeds are reset FOR THE WHOLE PROGRAM

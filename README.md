@@ -22,3 +22,4 @@ The model can be trained using the following command:
 python drafter/train.py --data_path path/to/data/data.json --exp_path path/to/exp
 ```
 Most of the parameters can be changed when calling the script. 
+The script will create a tensorboard at exp_path from which you can follow the experiment. At the moment model saving/loading isn't supported

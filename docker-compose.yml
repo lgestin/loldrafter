@@ -14,7 +14,7 @@ services:
     volumes:
       - ${PATH_TO_DATA}:/data
       - ${PATH_TO_EXP}:/exp
-    command: python /app/drafter/train.py --data_path /data/data.json --exp_path /exp --max_iter 2000
+    command: python /app/drafter/train.py --data_path /data/data.json --exp_path /exp
     deploy:
       resources:
         reservations:

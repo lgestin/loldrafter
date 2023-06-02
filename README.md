@@ -23,3 +23,17 @@ python drafter/train.py --data_path path/to/data/data.json --exp_path path/to/ex
 ```
 Most of the parameters can be changed when calling the script. 
 The script will create a tensorboard at exp_path from which you can follow the experiment. At the moment model saving/loading isn't supported
+
+## Runing using docker-compose
+
+You can run this code if you have docker-compose installed. Be aware that you'll need to change the permissions of the files created to access them.
+
+for scraping:
+```
+PATH_TO_DATA=/path/to/data docker-compose up scraping
+```
+
+for training:
+```
+PATH_TO_DATA=path/to/data PATH_TO_EXP=/path/to/exp docker-compose up training
+```

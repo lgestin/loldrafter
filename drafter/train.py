@@ -36,15 +36,12 @@ def train(
     val_data = torch.utils.data.DataLoader(val_set, batch_size=16)
 
     model = Drafter(d_model=d_model, n_embeddings=dataset.n, dropout=dropout)
-    import ipdb
 
-    ipdb.set_trace()
+    assert torch.cuda.is_available()
+    model = model.cuda()
 
-    if torch.cuda.is_available():
-        model = model.cuda()
-
-        def move_batch_to_device(batch, device="cuda"):
-            return {k: v.to(device) for k, v in batch.items()}
+    def move_batch_to_device(batch, device="cuda"):
+        return {k: v.to(device) for k, v in batch.items()}
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 

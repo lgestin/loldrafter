@@ -1,4 +1,6 @@
-FROM nvcr.io/nvidia/pytorch:23.04-py3
+FROM python:3.11
+
+RUN pip install requests beautifulsoup4
 
 RUN mkdir /app
 

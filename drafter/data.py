@@ -21,7 +21,6 @@ class DraftDataset(Dataset):
         random.shuffle(self.data)
 
         # filter out sample for which we don't have pick/ban order
-        # TODO split data, split on augmentation isn't enough
         games = [game for game in self.data if game.blue.picks_order is not None]
         self.data = games
 
@@ -36,36 +35,7 @@ class DraftDataset(Dataset):
             self.labels["patchs"] = json.load(f)
         self.n["patchs"] = max(v for v in self.labels["patchs"].values())
 
-        # DRAFT MASKS
-        # DraftPhase has n possible phases
-        # 0:
-        #   PICKS: 0 0 0 0 0 | 0 0 0 0 0
-        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
-
-        # 1:
-        #   PICKS: 1 0 0 0 0 | 0 0 0 0 0
-        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
-
-        # 2:
-        #   PICKS: 1 0 0 0 0 | 1 1 0 0 0
-        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
-
-        # 3:
-        #   PICKS: 1 1 1 0 0 | 1 1 0 0 0
-        #   BANS:  1 1 1 0 0 | 1 1 1 0 0
-
-        # 4:
-        #   PICKS: 1 1 1 0 0 | 1 1 1 0 0
-        #   BANS:  1 1 1 1 1 | 1 1 1 1 1
-
-        # 5:
-        #   PICKS: 1 1 1 0 0 | 1 1 1 1 0
-        #   BANS:  1 1 1 1 1 | 1 1 1 1 1
-
-        # 6:
-        #   PICKS: 1 1 1 1 1 | 1 1 1 1 0
-        #   BANS:  1 1 1 1 1 | 1 1 1 1 1
-
+        # number of picks that were drate in a given state
         blue_picks_state = torch.tensor([0, 1, 1, 3, 3, 3, 5, 5])
         red_picks_state = torch.tensor([0, 0, 2, 2, 3, 4, 4, 5])
         blue_bans_state = torch.tensor([3, 3, 3, 3, 5, 5, 5])
@@ -122,6 +92,25 @@ class DraftDataset(Dataset):
         if draft_state % 2 == 1:
             data = {k: v.flip(0) for k, v in data.items()}
 
+        return data
+
+    def augment(self, data: dict, p: float = 0.15):
+        picks, bans = data.pop("picks"), data.pop("bans")
+        device = picks.device
+
+        # augment picks
+        n_champions = max(self.labels["champions"].values())
+        augment_mask = torch.rand(picks.shape, device=device) < p
+        augmentation = torch.randint(0, n_champions + 1, picks.shape, device=device)
+
+        picks = picks * ~augment_mask + augmentation * augment_mask
+
+        # augment bans
+        augment_mask = torch.rand(bans.shape, device=device) < p
+        augmentation = torch.randint(0, n_champions + 1, picks.shape, device=device)
+
+        bans = bans * ~augment_mask + augmentation * augment_mask
+        data["picks"], data["bans"] = picks, bans
         return data
 
 

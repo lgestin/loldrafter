@@ -48,6 +48,8 @@ def train(
     writer = SummaryWriter(exp_path)
 
     def loop(batch):
+        if model.training:
+            batch = dataset.augment(batch, p=0.15)
         if cuda:
             batch = move_batch_to_device(batch=batch, device="cuda")
 
